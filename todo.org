@@ -1,0 +1,16 @@
+#+title: Mastering MongoDB 4.x 笔记(packt 出版时间 2019)
+
+* TODO MongoDB – 为现代 web 而生的数据库, 介绍 web, SQL, NoSQL 技术的发展至今的过程
+* TODO 模式设计和数据模型设计
+* TODO MongoDB CRUD 鸟瞰图
+* TODO 高级查询, 包含 Rupy、Python、PHP, 同时包含官方驱动和 ODM
+* TODO 多文档的 ACID 事务,探索 MongoDB 4.0 开始提供的 ACID 事务特性
+* TODO 聚合,深入聚合框架。同样讨论什么时候以及为什么应当使用聚合,而不是使用 MapReduce 和数据库查询
+* TODO MongoDB 的索引
+* TODO 监控、备份、安全,讨论MongoDB 的相关操作。监控、备份、安全是需要在部署生产环境之前就需要考虑的内容
+* TODO 存储引擎, 讲解 MongoDB 中不同的存储引擎。讲解每个存储引擎的利弊以及实际的案例
+* TODO MongoDB 生态中的工具,涵盖本地和云端工具
+* TODO 利用 MongoDB 处理大数据
+* TODO 复制, 讨论复制集以及如何管理他们。从复制集的结构和复制集的内部结构开始,然后深入具体的设置和配置复制集
+* TODO 分片(sharding),他是 MongoDB 一个有趣的特性。从分片的架构开始,然后如何设计分片,尤其是如何选择分片键(shard key)
+* TODO 容错和高可用,强调安全性以及开发人员和DBA应该牢记的一系列清单
