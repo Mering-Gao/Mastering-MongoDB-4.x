@@ -1,0 +1,84 @@
+#+title: 为现代 Web 而生
+
+* 内容
+- SQL 和 MongoDB 的历史和发展
+- 从 SQL 和其他 NoSQL 用户角度看待 MongoDB
+- MongoDB 的常见使用场景及其重要性
+- MongoDB 的配置和最佳实践
+
+* 技术要求
+
+需要安装 MongoDB4+ , Apache Kafka,Apache Spark,Apache Hadoop
+
+* SQL 和 NoSQL 的发展
+
+SQL 诞生于 1974 年, ANSI SQL 诞生于 1986,最新的是 SQL:2016
+
+NoSQL 诞生于 1998(Strozzi)
+
+MongoDB 2009 年 v1,2011 v2,2015 v3,207 v3.4,2018 v4.0。
+
+NoSQL 基于不严格的 ACID  特性, 使得他能够拥有比较好的性能、可扩展性、灵活性、低复杂度。
+
+* MongoDB 的发展
+
+** v1.0 和 v1.2
+
+- 文档模型(document-based model)
+- 全局锁(Global lock(process level))
+- 集合索引
+- 文档的 CRUD 操作
+- 无认证(认证是在服务器层处理的)
+- 主从复制
+- MapReduce(v1.2)
+- 存储 JavaScript 函数(v1.2)
+
+** v2
+
+- Background index creation (since v1.4)
+- 分片 v1.6
+- 更多的操作符 v1.6
+- Journaling (since v1.8)
+- 稀疏和覆盖索引 v1.8
+- 压缩命令,减少磁盘使用
+- 更叫高效的内存使用
+- 并发提升
+- 索引性能增强
+- 副本集更具可配置性并且具有数据中心意识
+- MapReduce 增强
+- 认证 2.0
+- 地理空间功能
+- 聚合框架 v2.2 和 聚合增强 v2.6
+- TTL collections v2.2
+- DB 级别的锁并发性能提升 v2.2
+- 全文搜索 v2.4 and integration (since v2.6)
+- 哈希索引 2.4
+- 安全性增强和基于角色的访问权限 v2.4
+- V8 JavaScript 引擎替代 SpiderMonkey v2.4
+- 查询引擎增强 v2.6
+- 可插拔的存储引擎 API
+- 引入 WiredTiger 存储引擎,支持文档级别的锁,而(MMAPv1 支持的是集合级别的锁)
+
+** v3
+
+- 复制和分片增强 v3.2
+- 文档验证 v3.2
+- 聚合框架增强操作 v3.2
+- 多个存储引起(仅在企业版本中)
+- Query language and indexes collation (since v3.4)
+- 只读的数据库视图  v3.4
+- Linearizable read concern (since v3.4)
+
+** v4
+
+- 多个文档的 ACID 事务
+- Change streams
+- MongoDB tools (Stitch, Mobile, Sync, and Kubernetes Operator)
+
+** 整体的发展
+
+v1 就是一些基础的功能,v2 提供绝大数功能,如: 分片、索引、地理空间特性,内存和并发提升
+
+v2 到 v3  主要是聚合框架,全文搜索等。WiredTiger 的引入,使得锁不在是个大问题(之前是全局锁),锁可以在文档级别。
+
+v4 是一个重大的升级,提供了多文档的 ACID 事务特定,适合 NoSQL 可以更像 SQL。这使得巨大部分应用可以使用 MongoDB,尤其是需要强实时一致性保证的应用。change streams 允许快速的值数据的变更。
