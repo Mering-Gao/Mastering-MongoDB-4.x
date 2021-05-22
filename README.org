@@ -1,7 +1,11 @@
 #+title: Mastering MongoDB 4.x 笔记(packt 出版时间 2019)
 
-* TODO [[file:docs/MongoDB的设计目标和架构.org][MongoDB – 为现代 web 而生的数据库]]
-* TODO 模式设计和数据模型设计
+* DONE [[file:docs/MongoDB的设计目标和架构.org][MongoDB – 为现代 web 而生的数据库]]
+CLOSED: [2021-05-22 Sat 00:40]
+:LOGBOOK:
+- State "DONE"       from "TODO"       [2021-05-22 Sat 00:40]
+:END:
+* TODO [[file:docs/模式设计和数据模型设计.org][模式设计和数据模型设计]]
 * TODO MongoDB CRUD 鸟瞰图
 * TODO 高级查询, 包含 Rupy、Python、PHP, 同时包含官方驱动和 ODM
 * TODO 多文档的 ACID 事务,探索 MongoDB 4.0 开始提供的 ACID 事务特性
