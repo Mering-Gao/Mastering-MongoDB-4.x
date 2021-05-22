@@ -7,3 +7,235 @@
 - 为原子操作进行数据建模
 - 关系建模
 - 连接 MongoDB
+
+* 关系模式设计
+
+关系型数据库中通常用范式来减少数据冗余,通过反范式来提升性能
+
+* MongoDB 模式设计
+
+MongoDB 中必须基于应用的数据访问模式来进行数据建模。找到用户会遇到的问题对于设计我们的实体是非常重要的。关系数据库中设计数据冗余和反范式是频率非常高的并且也是有充分原因的。
+
+MongoDB 的 文档模型意味着一个文档可以比其他文档拥有更少或者更多的信息,即使这些文档在同一个集合中。内嵌文档的丰富详细的查询功能使得我们可以自由的设计文档。当知道了数据被访问的模式后,我们就可以决定哪些数据作为内嵌,哪些数据单独放在另一个集合中。
+
+* 读写率
+
+读写率也是在设计模型时需要着重考虑的。
+
+当读取数据时,我们希望避免 分散/聚集(scatter/gather) 场景的发生,就必须使用随机的 I/O 请求去命中多个分片,从而获取应用程序需要的数据。
+
+当写数据时,我们希望将数据尽可能的分散写到多个服务器,这样来避免单节点负载太高。
+
+上面看起来是冲突的,但是我们的值访问模式之后,可以将他们结合起来,例如使用副本集来从辅助节点读取数据。
+
+* 数据类型
+
+[[https://docs.mongodb.com/manual/reference/bson-types/][官方文档]]
+
+可以在查询时使用 =$type= 操作符来进行判断,例如: ~db.account.find( { "balance" : { $type : 16 } } );~ 或者 ~db.account.find( { "balance" : { $type : "integer" } } );~
+
+* 不同数据类型的比较运算
+
+MongoDB 中同一字段的数据类型也是可以不同的(这可能是偶然发生,但是可能是开发者有意设计的)。
+
+不同数据类型排序的规则, 从高往低的顺序如下:
+1. Max key (internal type)
+2. Regular expression
+3. Timestamp
+4. Date
+5. Boolean
+6. ObjectID
+7. Binary data
+8. Array
+9. Object
+10. Symbol, string
+11. Numbers (int, long, double)
+12. Null
+13. Min key (internal type)”
+
+不存在字段时,他们被当做该字段值为 null 来对待。
+
+数组字段有点复杂,正序排序(或者 < ) 会比较数组中最小的一个元素。逆序排序(或者 >) 会比较数组中最大的一个元素。
+例如:
+#+begin_src mongo
+  > db.types.find()
+  { "_id" : ObjectId("5908d58455454e2de6519c49"), "a" : [ 1, 2, 3 ] }
+  { "_id" : ObjectId("5908d59d55454e2de6519c4a"), "a" : [ 2, 5 ] }
+
+  > db.types.find().sort({a:1})
+  { "_id" : ObjectId("5908d58455454e2de6519c49"), "a" : [ 1, 2, 3 ] }
+  { "_id" : ObjectId("5908d59d55454e2de6519c4a"), "a" : [ 2, 5 ] }
+
+  > db.types.find().sort({a:-1})
+  { "_id" : ObjectId("5908d59d55454e2de6519c4a"), "a" : [ 2, 5 ] }
+  { "_id" : ObjectId("5908d58455454e2de6519c49"), "a" : [ 1, 2, 3 ] }
+
+    > //如果是数组字段和单值字段比较,单值会被当做一个元素的数组
+
+  > db.types.insert({"a":4})
+  WriteResult({ "nInserted" : 1 })
+
+  > db.types.find().sort({a:-1})
+  { "_id" : ObjectId("5908d59d55454e2de6519c4a"), "a" : [ 2, 5 ] }
+  { "_id" : ObjectId("5908d73c55454e2de6519c4c"), "a" : 4 }
+  { "_id" : ObjectId("5908d58455454e2de6519c49"), "a" : [ 1, 2, 3 ] }
+
+  > db.types.find().sort({a:1})
+  { "_id" : ObjectId("5908d58455454e2de6519c49"), "a" : [ 1, 2, 3 ] }
+  { "_id" : ObjectId("5908d59d55454e2de6519c4a"), "a" : [ 2, 5 ] }
+  { "_id" : ObjectId("5908d73c55454e2de6519c4c"), "a" : 4 }
+#+end_src
+
+* Date
+
+Date 以毫秒记录时间戳(1970 开始),64位有符号数存储,负数代表 1970 之前。
+
+Date 在 MongoDB 中以 UTC 方式存储。他不是包含时区的时间戳。应用要基于本地时区访问和修改时间戳时,这些要在应用层处理。
+
+在 MongoDBshell 中可以使用如下操作:
+#+begin_src mongo
+  var now = new Date();
+  db.page_views.save({date: now,
+                      offset: now.getTimezoneOffset()});
+
+  var record = db.page_views.findOne();
+  var localNow = new Date( record.date.getTime() - ( record.offset * 60000 ) );
+#+end_src
+
+* ObjectId
+
+他是 MongoDB 的特殊数据类型,每个文档都包含一个 ~_id~ 字段, 他是集合中文档的主键,如果插入文档时没有该字段,MongoDB 会自动创建一个 ObjectId 数据类型给这个字段
+
+不建议混用 ObjectId, 但是我们可以用它来完成特殊目标。
+
+ObjectId 具有以下特性:
+- 包含 12 字节
+- 是有序的
+- 按照 ~_id~ 排序就是按照文档的创建时间排序
+- 在 shell 中可以通过 ~.getTimeStamp()~ 来获取创建时间
+
+ObjectId 数据结构如下:
+- 4 字节的从 Unix 纪元开始的秒数
+- 3 字节机器识别码
+- 2 个字节进程 ID
+- 3 个字节计数器,从某个随机值开始(A 3-byte counter, starting with a random value)
+
+这个结构保证了 ObjectId 是唯一的
+
+* 为原子操作而进行数据建模
+
+MongoDB 是宽松的 ACID 限制。因为缺失事务,有时候很难保证一致性操作,尤其是在失败事件中。
+
+庆幸的是有些操作在文档级别是原子性的:
+- update()
+- findandmodify()
+- remove()
+
+对于单个文档来说,他们是原子性的
+
+这意味着,如果我们往同一个文档内嵌入信息,那么他们总是同步的。
+
+对于同一个文档,使用 update 对其中多个字段同时更新时,他们是原子性的。
+
+但是对于多个文档更新来说,部分可能是成功的,这种情况可能发生在多文档更新没有原子性保证。这种情况在部分场景下可能是允许的。在大部分情况下,我们需要跨多文档,甚至跨多集合更新的原子性。
+
+有时候你可以通过两阶段提交协议来实现跨文档,或者跨集合的原子性操作,记录相关的信息,例如: 初始化、待处理、处理中、完成、取消中、取消完成。
+
+* 写隔离性
+
+可以使用 ~$isolated~ 来对多文档写操作和其他写请求和读请求进行隔离
+
+但是他并不会带来原子性,所以如果部分成功,那么仍然需要手动处理
+
+~$isolated~ 会在整个集合上加上排他锁,这意味着不论哪种存储引擎,性能都会严重下降,即使使用的 WiredTiger 这种文档级别锁的引擎
+
+~$isolated~ 不支持分片集群,当我们将副本集改为分片部署时可能带来问题。
+
+* 读隔离性和一致性
+
+ MongoDB 的读取类似于关系数据库的 *读未提交* ,这意味着读的数据,可能最终没有被持久化到磁盘,例如数据丢失,副本集回滚操作。
+
+尤其是,当使用的默认的写行为来更新多个文档,缺乏隔离时可能导致以下问题:
+- 读请求可能缺失一些文档,这些文档是更新操作时被更新的文档
+- 不可串行性操作
+- 读取不是实时的(Read operations are not point-in-time)
+
+这个可以使用 ~$isolated~ 来解决,但是损失极大的性能
+
+查询时没有使用 ~.snapshot()~ 同样可能读取不一致的数据。 ~.snapshot()~  有如下限制:
+- 不支持分片
+- 不支持 sort,也不支持使用 hint 来强制使用某个索引
+- 不支持实时读取行为
+
+如果集合中的数据基本是静态的,那么可以使用一个唯一索引来模拟 snapshot() 并且仍然可以使用 sort()
+
+总之需要在应用层来确保不会获取意外的结果
+
+3.4 开始支持(linearizable read concern)
+With linearizable read concern from the primary member of a replica set and a majority write concern,我们可以保证多个线程读写一个文档,就像单个线程一个一个执行这些操作一样。这和关系数据库中的线性调度类似,在 MongoDB 中被称为实时排序(real-time order)
+
+* 关系建模
+
+** one2one
+
+可以使用两个集合,使用字段记录关联的数据
+
+也可以使用嵌套文档来表示一对一关系,这样的好处是不需要跨集合查询,可以执行原子性更新,可以内嵌更多的信息。
+
+要注意单个文档的大小最大应当是 16MB,并且数组中存储上百个元素会导致性能下降。
+
+** one2many、many2many
+
+可以是两个集合,对与 1 这一端,可以定义数组存储关联数据的 ~_id~
+
+对于多对多,可以在两个集合的文档中都加入数组字段
+
+* 关键词搜索的数据建模
+
+对于关键词搜索来说,大部分应用都会用到,如果这是一个核心操作的话,选择专业的搜索引擎例如 ES。
+
+规模不是非常大的时候,也可以使用 MongoDB 来实现
+
+例如一个产品信息:
+#+begin_src mongo
+  { name : "Macbook Pro late 2016 15in" ,
+    manufacturer : "Apple" ,
+    price: 2000 ,
+    keywords : [ "Macbook Pro late 2016 15in", "2000", "Apple", "macbook", "laptop", "computer" ]
+   }
+#+end_src
+
+可以在 keywords 字段设置 *multi-key* 索引,这样就可以按照名称,价格等进行搜索。但是这不是高效灵活的方式,因为无法保持关键次同步,为结果打分等,唯一的好处就是可以快速构建查询。
+
+从 2.4 开始 MongoDB 支持特殊的全文索引类型。weights 设置各个字段的权重
+#+begin_src mongo
+  db.products.createIndex({
+       name: "text",
+       manufacturer: "text",
+       price: "text"
+     },
+    {
+       weights: { name: 10,
+         manufacturer: 5,
+        price: 1 },
+       name: "ProductIndex"
+     })
+#+end_src
+
+全文索引还可以 ~{"$**":"text"}~ 来设置所有字段都建立全文索引。
+
+* 连接 MongoDB
+
+可以直接通过特定编程语言的驱动连接,也可以是通过 ODM 层透明的映射模型对象和 MongoDB
+
+* Python
+
+可以使用 pymongo 驱动连接 MongoDB
+
+如果连接副本集, 那么需要设置一些服务器来来让客户端找到主节点和从节点、或者裁判节点
+
+~client = pymongo.MongoClient('mongodb://user:passwd@node1:p1,node2:p2/?replicaSet=rsname')~
+
+连接分片需要提供 MongoDB 路由器 IP 以及服务器的 host
+
+pyodm 是一个 odm 层
