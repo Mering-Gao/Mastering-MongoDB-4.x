@@ -1,1 +1,188 @@
 #+title: CRUD 操作
+
+* 内容
+
+- 使用 shell 进行 CRUD
+- 管理
+- 聚合框架
+- shell 安全
+- 授权
+
+* 使用 shell 进行 CRUD
+
+直接使用 mongo 命令就能进入交互环境
+
+对于 update、remove、insert 会返回一个一个 WriteResult 结果,用于提示用户,插入、更新、删除操作的结果。
+
+* shell 中使用 js 脚本
+
+可以在 shell 中直接编写 js 代码
+
+可以在启动 mongo 时指定 js 脚本文件,例如: ~mongo xxx.js~
+需要注意两点:
+- 写操作的默认 write concern 是 1,也就是写操作需要得到副本集主节点的确认或者单节点服务器的确认
+- 如果需要打印结果,那么使用 print() 函数或者使用 printjson() 函数
+
+* 使用 shell 和使用 js 脚本的区别
+
+shell 中可以直接使用 show dbs 等辅助命令,但是脚本中不行。
+
+
+| shell                   | js                                    |
+| show dbs,show databases | db.adminCommand("listDatabases")      |
+| use <dbname>            | db=db.getSiblingDB("dbname")          |
+| show collections        | db.getCollectionNames()               |
+| show users              | db.getUsers()                         |
+| show roles              | db.getRoles({showBuiltinRoles:true})  |
+| show log <logname>      | db.adminCommand({"getLog":"logname"}) |
+| show logs               | db.adminCommand({"getLog":"*"})       |
+| it                      | cursor=db.collections.find();if(cursor.hasNext()){cursor.next()} |
+
+* 通过 shell 批量插入
+
+通过批量插入文档,可以在 for 循环中实现。例如:
+#+begin_src mongo
+  authorMongoFactory = function() {
+    for(loop=0;loop<1000;loop++){
+      db.books.insert({name: "MongoDB factory book" + loop})
+    }
+  }
+
+  function () {
+    for(loop=0;loop<1000;loop++){
+      db.books.insert({name: "MongoDB factory book" + loop})
+    }
+  }
+#+end_src
+上面两种方式都会导致 1000 次的写入操作,这可能增加服务器的压力
+
+如果使用 *bulk* 写入操作,那么知道触发一些 insert 命令,并且一次性插入 1000 条文档
+#+begin_src mongo
+  fastAuthorMongoFactory = function() {
+    var bulk = db.books.initializeUnorderedBulkOp();
+    for(loop=0;loop<1000;loop++) {
+      bulk.insert({name: "MongoDB factory book" + loop})
+    }
+    bulk.execute();
+  }
+#+end_src
+~db.books.initializeUnorderedBulkOp();~  用于初始化批量写入操作,这里的 unorder 表示不关心具体的写入顺序,如果我们写入的数据之间没有关联的话,这个是没有问题的。
+但是,如果写入的数据需要有序,那么使用 ~db.books.initializeOrderedBulkOp();~
+
+* 通过 shell 批量操作
+
+前面的批量插入在某些场景下不用考虑顺序。然而批量操作中,不仅仅支持插入,还支持其他操作。使用的方式和批量插入时一样的。
+#+begin_src mongo
+  var bulk = db.bookOrders.initializeOrderedBulkOp();
+  bulk.find({isbn: 101}).updateOne({$inc: {available : 1}});
+  bulk.find({isbn: 101}).updateOne({$inc: {available : -100}});
+  bulk.execute();
+#+end_src
+
+注意: 如果使用 Unordered ,那么执行顺序是不能得到保证的
+
+mongodb 在执行批量操作时,会把操作分成 1000 个一组,例如要执行的操作是:
+1002 inserts, 998 updates, 1004 deletes,5 inserts 会变成 1000 inserts, 2 inserts,998 updates,1000 deletes, 4 deletes, 5 inserts。 *在以后的版本中这个行为可能会改变*
+
+~bulkWrite~ 的参数是一系列的操作, WriteConcern,ordered
+
+* 管理
+
+MongoDB 的管理分为 3 个级别: 进程、集合、索引
+
+进程级别,可以通过 shutDown 命令关闭服务器
+
+数据库级别: dropDatabase、listCollections、copyDb 或者 clone 来复制一个远程数据库到本地、repairDatabase 来恢复不一致状态
+
+集合级别: drop、create、renameCollection、cloneCollection 可以复制远程的集合到本地数据库、cloneCollecionAsCapped 将集合复制到一个有限大小的集合、convertToCapped 将集合转为有限空间
+
+索引级别: createIndexes、listIndexes、dropIndexes、reIndex
+
+* fsync
+
+MongoDB 通常每 60 秒将所有的操作同步到磁盘。fsync 会强制以同步的方式将数据同步到磁盘
+
+当我们需要备份数据库时,也需要执行一个锁操作。 fsync 执行期间会锁住所有的写操作和部分读操作
+
+大部分情况下我们需要使用日志来实现备份和恢复,这个在后序备份,安全章节讲述。
+
+* compact 碎片整理
+
+MongoDB 的文档在磁盘上暂居特定大小的空间,如果我们执行了更新操作,使得文档大小增加了,那么会导致文档在存储块中移动,导致操作时间增加,并且在查询时找不到它,同样也会导致空间中存在空洞。
+
+compact 操作会进行碎片空间整理,减少空间的占用。
+
+过程如下:
+| doc1 | doc2 | ... | docn |      |
+| doc1 | 空洞 | ... | docn | doc2 |
+更新了 doc2 原始位置,存不下了
+
+执行 compact 命令时,还可以指定 paddingFactor 参数,例如: ~db.runCommand({compact:"collection",paddingFactor: 2.0})~
+
+paddingfactor 的影响预分配给文档的磁盘空间大小, 大小从 1.0 到 4.0 默认是 1.0。
+
+对于写入比较频繁的应用,很有可能导致文档增加,如果有了预分配磁盘空间,那么在空间有效的情况下,就不需要移动文档
+
+注意的是,这可能导致浪费很多的磁盘空间。
+
+* currentOp 和 killOp
+
+~db.currentOp()~ 会显示当前正在执行的的操作并且尝试 kill 掉。我们需要在执行 ~killOp()~ 之前执行 ~use admin~
+
+killOp 是不推荐的,因为可能会导致数据库处于未定义的状态 ~db.runCommand({"killOp":1,"op":"oprationId"})~
+
+* collMod
+
+collMod 通过修改数据库的行为来将一些 flags 传递给集合。“collMod is used to pass flags to a collection by modifying the underlying database's behavior.”
+
+从 3.2 版本以后,比较有意思的是设置集合中文档的校验规则。
+
+可以设置一些列的文档校验规则,他们会在更新、插入集合时起作用,也就是说对于现有的文档,他们在被更新时,也会触发校验
+
+如果我们把 validationLevel 设置为 moderate 那么我们只能对已经有效的文档进行校验。
+通过设置 validataionAction 为 warn 那么在校验失败时会记录相关的日志,或者设置为 error 来组织不合法的更新。
+
+例如:
+#+begin_src mongo
+  db.runCommand( { collMod: "bookOrders",
+  "validator" : {
+             "$and" : [
+                {
+                   "isbn" : {
+                      "$exists" : true
+                   }
+                },
+                {
+                   "name" : {
+                      "$exists" : true
+                   }
+                }
+             ]
+          }
+  })
+#+end_src
+当插入以下数据时会发生错误
+#+begin_src mongo
+  db.bookOrders.insert({isbn: 102})
+  WriteResult({
+  "nInserted" : 0,
+  "writeError" : {
+  "code" : 121,
+  "errmsg" : "Document failed validation"
+  }
+  })
+#+end_src
+
+* touch
+
+touch 命令可以将数据或者索引加载到内存中。当我们需要脚本中使用数据或者索引时,这个操作可以提高速度。
+
+在生成环境中需要谨慎使用,因为将数据和索引导入内存可能会将现有数据替换掉。
+
+~db.runCommand({touch:"bookOrders",data: true/false, index: true/false})~
+
+* shell 中执行 MapReduce
+
+在 MongoDB 的整个发展过程中,在 shell 中编写 MapReduce 没有得到重视和广泛使用。
+
+MapReduce 用于获取大的数据集的聚合结果。
