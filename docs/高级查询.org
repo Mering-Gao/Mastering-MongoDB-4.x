@@ -1,1 +1,88 @@
 #+title: 高级查询
+
+* 内容
+
+- MongoDB 操作符
+- 使用 python,pymodm 进行 CRUD
+- 比较运算符
+- change streams
+
+* 使用 python 驱动进行 CRUD
+
+pymongo 是官方支持的驱动
+
+** 创建和删除
+#+begin_src python
+  from pymongo import MongoClient
+  from pprint import pprint
+
+  client = MongoClient()
+  books = client.test.books
+  book = {
+      "isbn": "301",
+      "name": "Python and MongoDB",
+      "price": 60
+  }
+
+  insert_result: pymongo.results.InsertOneResult = books.insert_one(book)
+#+end_src
+
+~insert_result~ 中有两个字段需要关注的:
+- Acknowledged: 布尔值,如果是 true,表示插入成功; false 表示失败,或者如果 write concern 是 0
+- =inserted_id= 是对于 ~insert_one~  函数表示插入的文档的 id;如果是 ~insert_many~ 方法,那么是 =inserted_ids= 插入的文档 id 数组
+
+删除可以使用 ~delete_many~  或者 ~delete_one~ 方法
+如果 要删除集合中所有数据可以使用 ~delete_many({})~  或者 ~books.drop()~
+
+** 查询
+
+~find~ 方法返回可得带对象; ~find_one~ 返回单个文档
+
+** 更新文档
+
+~update_one~ 或者 ~update_many~
+
+一个有意思的参数是 ~ypass_document_validation=false~ (这是默认值), 是否不进行文档校验
+
+结果中包含两个有意思的字段:
+- =matched_count= 匹配的文档条数
+- =modified_count= 被更新的文档条数
+
+* 使用 PyMODM  进行 CRUD
+
+他是 ODM 的核心,提供了简单、易扩展的能力。有 MongoDB 的工程师进行维护,能够最快的支持最新的 MongoDB 稳定版。
+
+** 创建文档
+
+位置参数
+~user = User('alexgiamas@packt.com', 'Alex', 'Giamas').save()~
+
+命名参数
+~user = User(email='alexgiamas@packt.com', 'Alex', last_name='Giamas').save()~
+
+批量插入
+#+begin_src python
+  users = [ user1, user2,...,userN]
+  User.bulk_create(users)
+#+end_src
+
+** 更新文档
+
+#+begin_src python
+  user.first_name = "ali"
+  user.save()
+#+end_src
+
+如果需要更新一个或者多个文档,需要使用 raw 来过滤文档,然后跟随 update 进行更新
+
+#+begin_src python
+  User.objects.raw({'first_name': {'$exists': True}})
+                .update({'$set': {'updated_at': datetime.datetime.now()}})
+#+end_src
+
+** 删除
+#+begin_src python
+  User.objects.raw({'first_name': {'$exists': True}}).delete()
+#+end_src
+
+** 这玩意功能没有全面支持,还是 pymongo 全面
