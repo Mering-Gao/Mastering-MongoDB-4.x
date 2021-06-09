@@ -86,3 +86,214 @@ pymongo 是官方支持的驱动
 #+end_src
 
 ** 这玩意功能没有全面支持,还是 pymongo 全面
+
+* 查询最佳实践
+
+以下是使用正则表达式、查询结果、游标以及删除文档时的一些最佳实践。
+
+** 使用正则表达式
+
+最简单正则查询语法: =db.books.find({"name":/mongo/})=
+可用的选项:
+- i 忽略大小写,例如: =/mongo/i=
+- m 多行模式
+
+还可以使用 =$regex= 操作符 : ~db.books.find({'name': { '$regex': /mongo/i } })~
+
+两个有用的选项:
+- x  忽略模式中的空白字符,除非他们被转义了,或者包含在字符类中。同时,它还会忽略为转义的 hash/pound (#, £) 以及 换行符。它不影响 VT 字符的处理
+- s "." 可以匹配任意字符,包含"\n"
+
+正则匹配会导致查询变慢,它适合与以下场景:查询字符串开头,并且这个字段有索引。也就是 正则匹配符以 =^= 或者 =\A=  开头
+
+=/mongo/= 和 =/^mongo.*/=  都能匹配以 mongo 开头的字符串,但是第一个在匹配到 6 个字符后就会停止,而第二个会继续匹配后续字符。
+
+** 查询结果和游标
+
+MongoDB 缺乏事务特性,这使得他和关系型数据库中理所当然的结果在 MongoDB 表现会不一样。
+
+例如,之前的章节,在更新文档的时候,文档大小改变了,这使得文档会移动到磁盘的一个新的位置(磁盘块的尾部)
+
+当我们有多个线程查询和更新 单个集合时,一个文档可能在结果集中出现多次。比如下面这个场景:
+- 线程 A 查询集合匹配到了 A1 文档
+- 线程 B 更新 A1,导致 A1 存储大小增加,MongoDB 将 A1 移动到另一个物理位置
+- 线程 A 继续查询集合,一直查询到集合的结尾,这个时候 A1 又被查询到了
+
+这个存在一定的概率,如果不能在应用中保证这个情况不发生,那么需要使用 ~snapshot()~ 来保证
+
+官方驱动包含 ~snapshot()~ ,shell 中使用方式是: ~db.books.find().snapshot()~
+
+~$snapshot~ 不能使用在分片集合中;它必须在查询返回第一个文档前应用 ~$snapshot~; 它也不能和 ~hint()~  或者 ~sort()~ 一起使用
+
+可以通过 ~hint({id:1})~ 来模拟 snapshot, 他会强制查询引擎使用 id 索引,他和 ~$snapshot~ 作用相似
+
+如果查询使用了唯一索引,并且如果查询期间这个字段值不会被修改,那么这个也是没有问题的。即使如此, ~snapshot()~ 也无法保证查询期间的插入和删除操作影响查询结果。
+
+如果我们希望update、insert、delete 多个文档时,其他线程不会看到我们的操作结果,那么可以使用 ~$isolated~ : ~“db.books.remove( { price: { $gt: 30 }, $isolated: 1 } )~ , 他会在操作时给集合加上一把排他写锁。
+
+Isolated 操作仍然不是事务,他不保证原子性,如果过程中失败了,那么我们需要手动回滚。并且应当是最后一种特殊手段,来避免多个线程在任意时刻看到不一致的内容。
+
+** 删除操作需要注意的事项
+
+在 MongoDB 中删除文档,他之前占据的空间并不会被回收。也就是 10G 的文档 全部删除后,空间还是被占用 10G。MongoDB 会标着这些文档为删除状态,然后可能用这个空间存储其他文档。
+
+这个结果就是磁盘有空间没有被使用,然后由不会被操作系统回收。如果我们希望回收,那么就是用 ~compact()~ : ~db.books.compact()~
+
+也可以在启动 mongod 服务器的时候加上 =--repair= 参数
+
+更好的方案是使用压缩,这是 3.2 版本后,WiredTiger 引擎才支持的功能。我们可以使用 snappy 或者 zlib 来压缩文档的大小。但是,它仍然我发避免存储空洞。如果磁盘空间紧张,他会比 repair 和 compact 性能会好。
+
+压缩会占用额外的 CPU,但是通常是值得的
+
+* change streams
+
+3.6 版本提出,4.0 版本正式可用。提供了安全有效的方式来监听数据库的变更。
+
+** 介绍
+
+解决的问题场景:有些应用程序需要在其使用的数据发生变更时立即作出响应。现代的 web 应用陈谷需要在需要变更时作出响应并且刷新页面的部分视图而不是重新加载整个页面。前端的 ajax 和这个是相似的,也就是响应用户的操作,将数据提交给服务器,根据服务器返回的结果更新页面。
+
+想象一个多用户的 web 应用场景,数据库的更新可能是另一个用户的行为导致的。例如,看板页面中用户A正在查看,另一用户 B 可能吧工单的状态从 todo 改为 in progress
+而用户 A 的界面应当在不需要刷新页面的时候就能看到 B 所做的更新。有 3 中方式可以解决这个问题:
+- 最简单的方式,每隔 X 秒读取数据库来确认是否被修改。通常这种方式需要记录 status、timestamp,或者 version 来避免同一个更新被获取很多次。这个方式简单、效率低,因为在面对大量用户的时候不好扩展,当有上千个用户同时查询数据库时效率就很低了。
+- 在上一个基础之上,使用数据库触发器和应用层触发器。数据库触发器依赖于数据库本上来响应数据的变化。然后和第一种类似的是,触发器越多,数据库性能就会越低,
+- 最终,我们可以使用数据库事务或者副本日志来查询最新的变更并且对变更作出响应。这个方式是最有效、易扩展的方式
+
+change streams 提供了面向开发者的解决方式。它基于 oplog ,他是 mongodb 的操作日志,包含了服务器中所有数据库的操作。开发者不需要处理 oplog 或者游标的尾部。
+
+change streams 还具有其他高级特性: 用户只能在集合、数据上创建 change streams 时 ,必须具有这些集合
+数据库的读权限。
+
+change streams 在设计上时幂等的。即使应用程序无法准确获取最新的事件通知 ID,也能够自从较早的已知事件来恢复到相同的状态。
+
+change streams 是可恢复的。每一个change stream 响应文档都包含一个恢复 token。如果应用程序和数据库的不同步了,那么可以通过将最新的恢复 token 发送给数据库,那么久可以从这个位置继续。这个 token 需要在应用程序中持久化,因为 MongoDB 不会记录应用程序的失败,也不不会重试。MongoDB 只会在出现暂时的网络故障或者在副本集尽心选举才记录状态并且重试。
+
+** 设置
+
+change streams 可以针对集合、数据库、或者整个部署(副本集、分片集群)打开。它不会系统集合或者 管理、配置、本地数据库中的集合的更新作出反应。
+
+** 使用 change streams
+
+要是用 change streams 我们需要连接到副本集,副本集是使用 change stream 的必要条件,因为 change streams 依赖于 oplog。change streams 还会输出那些在副本集不会回滚的文档,所以他需要遵从 majority read concern。不论哪种方式,都推荐使用副本集来进行开发和测试,因为副本集是生产环境的推荐方式。
+
+例如, streams 数据库中由 signals 集合
+#+begin_src python
+  from pymongo import MongoClient
+
+
+  class MongoExample:
+      def __init__(self):
+          self.client = MongoClient()
+          db = self.client.streams
+          self.signals = db.signals
+      def change_books(self):
+          with self.client.watch() as stream: # 监听数据库中所有集合的更新
+            # 如果是用 self.signals.watch()  那么只监听 signals 集合的更新
+              for change in stream:
+                  print(change)
+
+  def main():
+      MongoExample().change_books()
+
+  if __name__ == '__main__':
+      main()
+#+end_src
+在一个终端中运行这段代码
+
+在另一个终端中操作 signals 集合
+#+begin_src mongo
+  use streams
+
+  db.signals.insert({value:114.3,signal:1})
+#+end_src
+
+第一个终端打印下面信息
+#+begin_src text
+  {'_id': {'_data': '825BB7A25E0000000129295A1004A34408FB07864F8F960BF14453DFB98546645F696400645BB7A25EE10ED33145BCF7A70004'}, 'operationType': 'insert', 'clusterTime': Timestamp(1538761310, 1), 'fullDocument': {'_id': ObjectId('5bb7a25ee10ed33145bcf7a7'), 'value': 114.3, 'signal': 1.0}, 'ns': {'db': 'streams', 'coll': 'signals'}, 'documentKey': {'_id': ObjectId('5bb7a25ee10ed33145bcf7a7')}}
+#+end_src
+
+~watch(pipeline=None, full_document='default', resume_after=None, max_await_time_ms=None, batch_size=None, collation=None, start_at_operation_time=None, session=None)~
+- pipeline : 对每一个文档执行聚合操作。因为 change streams 本身使用了聚合管道,所以我们可以添加事件,可以用的是以下事件: $match、$project、$addFields、$replaceRoot、$redact
+- ~full_document~,可以将其设置为 =updateLookup= 这样的话,可以返回更新部分,同时还能够返回更新后的完整文档。
+- ~start_at_operation_time~  用于监听特定时间戳或该时间戳之后的更新。
+- session 如果驱动支持传递 ClientSession 时可以用这个参数。
+
+** 说明
+
+以下包含 change 事件可能返回的所有字段,具体要看实际的更新的事件
+#+begin_src json
+  {  _id : { <BSON Object> },
+    "operationType" : "<operation>",
+    "fullDocument" : { <document> },
+    "ns" : {
+       "db" : "<database>",
+       "coll" : "<collection"
+    },
+    "documentKey" : { "_id" : <ObjectId> },
+    "updateDescription" : {
+       "updatedFields" : { <document> },
+       "removedFields" : [ "<field>", ... ]
+    }
+    "clusterTime" : <Timestamp>,
+    "txnNumber" : <NumberLong>,
+    "lsid" : {
+       "id" : <UUID>,
+       "uid" : <BinData>
+    }
+  }
+#+end_src
+
+*** fullDocument
+
+他是文档的最新状态,可能为一下结果
+- 如果是删除操作,那么这个字段为空,因为文档不在了
+- 如果是插入或者替换操作,那么这个字段是新的文档
+- 如果是更新,并且设置了 ~full_document=updateLoopup~  那么它包含的文档最近的 major-committed 版本
+
+*** oprationType
+
+他是操作类型,可以是: insert、delete、replace、update、invalidate
+
+*** documentKey
+
+被操作文档的 ObjectId
+
+*** updateDescription.updatedFields / removeFields
+
+updatedFields是被更新的数据, removeFields是被移除的字段列表
+
+*** txnNumber
+
+当操作是多文档事务的一部分时才会有这个字段,记录的是事务的号码。
+
+*** lsid
+
+当操作是多文档事务的一部分时才会有这个字段, 他是事务的会话标识符
+
+** 重要提示
+
+当使用分片数据库时,那么 change streams 需要针对 MongoDB 服务器打开。
+
+当使用副本集时,只能针对数据实例打开。
+
+每一个 change streams 都会打开一个新的连接。如果我们需要并行处理很多 change streams 那么需要增加连接池,以免性能严重下降。
+
+** 生产环境推荐
+
+change streams 是最近添加的功能,在以后的高版本中可能会发生变更
+
+*** 副本集
+
+change stream 只会处理已经被写入主节点的数据。如果主节点不可用,后者正在选举主节点时change streams 会暂停。
+
+invaidating 事件,例如删除或者重命名结合,会导致 change stream 关闭。并且被关闭后是无法恢复的。
+
+因为 change streams 依赖于 oplog 的大小,我们需要确保在事件被应用程序处理完前,oplog 空间的大小足以容纳这些事件。
+
+*** 分片集群
+
+对于分片集群有以下需要注意的:
+- change streams 针对集群中的每一个分片执行,并且和最慢的分片速度一致
+- 为了避免创建孤立文档的 change streams 事件,如果在分片下有多文档更新时,需要使用新的 ACID 兼容事务的特性。
+
+当对为分片的集合进行分片时, =documentKey= 字段将会包含 =_id= 直到 change streams 追上了第一个 chunk 迁移

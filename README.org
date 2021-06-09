@@ -15,8 +15,16 @@ CLOSED: [2021-06-03 Thu 23:14]
 :LOGBOOK:
 - State "DONE"       from "TODO"       [2021-06-03 Thu 23:14]
 :END:
-* TODO [[file:docs/高级查询.org][高级查询]]
-* TODO [[file:docs/多文档的ACID事务.org][多文档的 ACID 事务]]
+* DONE [[file:docs/高级查询.org][高级查询]]
+CLOSED: [2021-06-09 Wed 13:56]
+:LOGBOOK:
+- State "DONE"       from "TODO"       [2021-06-09 Wed 13:56]
+:END:
+* DONE [[file:docs/多文档的ACID事务.org][多文档的 ACID 事务]]
+CLOSED: [2021-06-09 Wed 18:36]
+:LOGBOOK:
+- State "DONE"       from "TODO"       [2021-06-09 Wed 18:36]
+:END:
 * TODO [[file:docs/聚合.org][聚合]]
 * TODO [[file:docs/索引.org][索引]]
 * TODO [[file:docs/监控、备份、安全.org][监控、备份、安全]]

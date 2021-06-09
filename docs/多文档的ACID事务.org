@@ -1,1 +1,197 @@
 #+title: 多文档 ACID 的事务
+
+* 内容
+
+- 多文档事务
+- python 中使用事务
+
+* ACID
+
+** 隔离性
+
+隔离级别
+- 可串行
+- 可重复读
+- 读已提交
+- 读未提交
+
+隔离级别会导致的问题:
+
+- 幻读
+- 不可重复读
+- 脏读
+- 丢失更新
+
+*** 幻读场景
+
+1. A 读了 1000  条记录,但是未提交
+2. B 插入的一条记录
+3. A 再次读取到 1001 条记录,执行提交
+
+如果是严格可串行隔离级别,那么事务 B 是在 A 提交之前应当被阻塞,但是这个导致性能问题,因为每一个写操作都要等到读事务提交。这也是为什么可串行性很少使用的原因。
+
+*** 不可重复读
+
+是指事务期间,一条记录读取了两次,第一次读取的内容和第二次读取的内容不一样。
+
+1. B 读取了账户余额是 50
+2. A 更新账户余额为 100 并且提交
+3. B 再次读取获取到越是 100,并且提交事务。
+
+读已提交级别能够保证不会脏读,但是不能保证可重复度。实际应用中用的比较多
+
+*** 脏读
+
+读未提交级别下会产生脏读
+
+不同级别的问题
+
+| 级别     | 脏读 | 不可重复读 | 幻读 |
+| 读未提交 | y    | y          | y    |
+| 读以提交 | n    | y          | y    |
+| 可重复读 | n    | n          | y    |
+| 可串行   | n    | n          | n    |
+
+postgresql 模式是读已提交,MongoDB 不是关系型数据库,因此如果每个操作都是用事务会使得情况变得复杂。
+
+mongodb 中的隔离级别类似于读未提交,这个看起来有点可怕,但是 MongoDB 中本身是没有事务和回滚的概念的。读取未提交数据是基于持久化之前这些数据就是可见的。
+
+*** 持久化
+
+关系型数据库的持久化使用的是 WAL(write-ahead-log),也就是数据在持久化之前,会现将日志写入持久性存储设备。
+MongoDB 的 WiredTiger 引擎也是使用 WAL,并且默认 60 秒刷新日志到持久化存储设备。
+
+* 事务的具体使用
+
+** 基本语法
+
+#+begin_src mongo
+  s.start_transaction()
+  orders.insert_one(order, session=s)
+  stock.update_one(item, stockUpdate, session=s)
+  s.commit_transaction()
+#+end_src
+
+** 设置数据
+往数据库库中插入两条记录
+#+begin_src json
+  { "_id" : ObjectId("5bc1fa7ef8d89f2209d4afac"), "account_id" : "1", "name" : "Alex", "balance" : 100 }
+
+  { "_id" : ObjectId("5bc1fa7ef8d89f2209d4afad"), "account_id" : "2", "name" : "Mary", "balance" : 50 }
+#+end_src
+
+下面通过代码将账号 1 的钱转到账号 2
+
+**  第一种代码
+
+#+begin_src python
+  def transfer(self, source_account, target_account, value):
+      print(
+          f'transferring {value} Hypnotons from {source_account} to {target_account}')
+      with self.client.start_session() as ses:
+          ses.start_transaction()
+          self.accounts.update_one({'account_id': source_account}, {
+                                   '$inc': {'balance': value*(-1)}})
+          self.accounts.update_one({'account_id': target_account}, {
+                                   '$inc': {'balance': value}})
+          updated_source_balance = self.accounts.find_one(
+              {'account_id': source_account})['balance']
+          updated_target_balance = self.accounts.find_one(
+              {'account_id': target_account})['balance']
+          if updated_source_balance < 0 or updated_target_balance < 0:
+              ses.abort_transaction()
+          else:
+              ses.commit_transaction()
+
+  transfer('1','2',300)
+
+  # 结果
+  # { "account_id" : "1", "name" : "Alex", "balance" : -200 }
+  # { "account_id" : "2", "name" : "Mary", "balance" : 350 }
+#+end_src
+这里的问题在于,没有检查账号 1 的余额是否充足。原因不是 ~abort_transation()~  而是没有使用 session
+
+这里唯一一个最重要的知识点是,MongoDB 中的事务需要在一个 session 中。但是仍然可以在事务代码体中执行事务外的操作。
+
+上面做的操作是: ~with self.client.start_session() as ses:~ 初始化事务会话。随后做的操作是非事务的方式。然后 ~ses.abort_transaction()~ 中止事务,实际上并没有进行任何回滚操作。
+
+** 第二种代码
+#+begin_src python
+  def __validate_transfer(self, source_account, target_account):
+         source_balance = self.accounts.find_one({'account_id': source_account})['balance']
+         target_balance = self.accounts.find_one({'account_id': target_account})['balance']
+
+         if source_balance < 0 or target_balance < 0:
+            return {'status': True, 's_bal': source_balance, 't_bal': target_balance}
+         else:
+             return {'status': False}
+
+  def tx_transfer_err(self, source_account, target_account, value):
+         print(f'transferring {value} Hypnotons from {source_account} to {target_account}')
+         with self.client.start_session() as ses:
+             ses.start_transaction()
+             res = self.accounts.update_one({'account_id': source_account}, {'$inc': {'balance': value*(-1)} }, session=ses)
+             res2 = self.accounts.update_one({'account_id': target_account}, {'$inc': {'balance': value} }, session=ses)
+             error_tx = self.__validate_transfer(source_account, target_account)
+
+             if error_tx['status'] == True:
+                 print(f"cant transfer {value} Hypnotons from {source_account} ({error_tx['s_bal']}) to {target_account} ({error_tx['t_bal']})")
+                 ses.abort_transaction()
+             else:
+                 ses.commit_transaction()
+#+end_src
+
+和第一种的区别是更新操作中传递了 ~session=ses~
+
+在校验函数中查询数据库的数据
+
+这种方式仍然会失败,原因和上一个一样,在事务中修改了数据库,这些更新在未提交之前是其它人是看不到的。
+
+** 第三种代码
+
+#+begin_src python
+  def __validate_transfer(self, source_account, target_account,session):
+         source_balance = self.accounts.find_one({'account_id': source_account},session=session)['balance']
+         target_balance = self.accounts.find_one({'account_id': target_account},session=session)['balance']
+
+         if source_balance < 0 or target_balance < 0:
+            return {'status': True, 's_bal': source_balance, 't_bal': target_balance}
+         else:
+             return {'status': False}
+
+  def tx_transfer_err(self, source_account, target_account, value):
+         print(f'transferring {value} Hypnotons from {source_account} to {target_account}')
+         with self.client.start_session() as ses:
+             ses.start_transaction()
+             res = self.accounts.update_one({'account_id': source_account}, {'$inc': {'balance': value*(-1)} }, session=ses)
+             res2 = self.accounts.update_one({'account_id': target_account}, {'$inc': {'balance': value} }, session=ses)
+             error_tx = self.__validate_transfer(source_account, target_account,ses)
+
+             if error_tx['status'] == True:
+                 print(f"cant transfer {value} Hypnotons from {source_account} ({error_tx['s_bal']}) to {target_account} ({error_tx['t_bal']})")
+                 ses.abort_transaction()
+             else:
+                 ses.commit_transaction()
+#+end_src
+这种方法在校验数据时同样传递了 session
+
+事务当中读法执行 DDL 操作,例如 ~drop()~, ~create_collection()~
+
+除了前面例子中提到了要点之外,我们还可以自定义每个事务的 =read_concern= 和 =write_concern=
+
+多文档事务中可用的 =read_concern=  级别是:
+- majority : 副本集的大多数服务器确认了数据。为了在事务中按照预期方式工作,还需要设置 =write_concern= 为 majority
+- local : 只需要本地服务器确认数据
+- snapshot : 从 4.0 版本开始事务的默认级别是 =read_concern= 。 如果事务提交使用的 majority 是 =write_concern= ,所有的事务操作都是来自于多数节点已提交的数据的 snapshot,否则得不到任何的保证
+
+多文档事务中可用的 =write_concern= 级别和 MongoDB 其他地方是一样的 。除了 =w:0= (no acknowledgement),他是不支持的。
+
+* 多文档事务的限制和最佳实践
+
+- 事务的超时时间是 60 秒
+- 不应当在事务中修改超过 1000 个文档。对于读取没有限制。
+- oplog 对于事务来说只会有一条记录,因为这个记录大小页不应当超过 16MB,对于更新来说通常没有问题,但是如果事务中插入了很多文档,可能会出问题。
+- 应当添加应用层逻辑来处理事务失败。例如,重试写入,或者因为错误而无法继续重试或者已经重试了很多次了而执行一些业务逻辑动作。
+- 当事务在执行时 DDL 操作(例如,修改索引、集合、数据库)会被加入队列中。当 DDL 正在执行时,事务会被立即中止。
+- 事务只能在副本集中使用,从 4.2 版本开始,事务也可以在分片集群中使用
+- 应当谨慎使用事务,事务并不能代替良好的 schema 设计。只有在无法用其他方法进行数据建模时才使用事务。
