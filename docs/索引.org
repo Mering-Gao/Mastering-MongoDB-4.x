@@ -1,1 +1,274 @@
 #+title: 索引
+
+*  内容
+- 索引的内部机制
+- 索引的类型
+- 构建和管理索引
+- 有效的使用索引
+
+* 索引的内部机制
+
+大部分情况下索引是 B 树结构。
+
+* 索引的类型
+
+** 单字段类型
+
+~db.books.createIndex({price:1})~ =-1= 表示逆序
+
+** 删除索引
+
+~db.books.dropIndex({price:-1})~  还可以根据索引的名字来删除 ~db.books.dropIndex("price_index")~
+
+** 嵌套字段索引
+
+和单字段类似 ~createIndex({"meta_data.page_count":1})~
+
+*还可以给整个嵌套文档字段索引,但是进行等值比较查询。*
+
+** 后台索引
+
+直接创建索引会阻塞这个集合上的所有其他操作。
+
+以后台形式创建索引,但是他存在一些限制,后面讲到
+~db.books.createIndex( { price: 1 }, { background: true } )~
+
+** 联合索引
+
+多个字段存储在索引中,在需要快速借助索引查询多个字段有价值 ~db.books.createIndex({"name": 1, "isbn": 1})~
+
+*** 联合索引的排序
+
+索引的顺序可以决定是否能够借助于索引来排序。例如上面的索引 ~db.books.find().sort( { "name": 1, "isbn": 1 })~ 和 ~sort( { "name": -1, "isbn": -1 })~ 可以直接使用索引进行排序
+
+而 ~sort( { "name": -1, "isbn": 1 })~ 和 ~sort( { "name": 1, "isbn": -1 })~ 是不行的
+
+*** 联合索引的复用
+
+注意创建索引是 第一个字段非常重要,他是被记录的索引值,其他的字段附加在索引项中,也就是查询时,如果不用第一个字段就用不了索引。
+
+查询条件中第一个字段的前后顺序是无关紧要的,MongoDB 会自动识别出来。
+
+** multikey 索引
+
+是给数组字段创建索引。它可以针对普通数组,也可以针对文档数组。创建方式和单字段方式一样。
+
+mutikey 索引也可以作为联合索引的一部分。但是在联合索引中只能存在一个数组字段。并且在插入数据时,如果字段包含多个数组字段也会导致插入失败。
+
+举个例子: 对于已存在文档的集合,如果两个字段都是数组,并且这两个字段建立联合索引就会失败。
+
+还有一点,索引是可以在空集合上创建的,那么创建了联合索引,并且在后续插入数据或者修改数据时被索引的字段中多个是数组,那么也会失败。
+
+还有一个限制是multikey 无法用到覆盖索引。
+
+查询语句中用到了 multikey 索引并且查询多个值时,执行规则是: 首先比较第一个值,接着顺序扫描后序的值。
+例如: ~find({tags: [ "mongodb", "index", "cheatsheet", "new" ] })~  会先全部扫描找出具有 mongodb 的条目,接着从这些条目中,依次比较后序的元素。
+
+** 特殊的索引
+
+*** 全文索引
+
+全文索引用于支持全文搜索 =reateIndex({"name": "text"})=
+
+一个集合只能有一个全文索引,但是可以包含多个字段,甚至全部字段(但是索引可能会很大)。
+
+联合索引中也可以包含全文索引 ~db.books.createIndex( { "available": 1, "meta_data.page_count": 1,  "$**": "text" } )~
+
+全文索引还会提取词干,删除停止词。( 支持 20 多种语言,需要配置来适应具体的语言)
+
+*** 散列索引
+
+=createIndex( { name: "hashed" } )=
+
+散列索引只能用于等值比较,不能用于范围查询
+
+MongoDB 分片也是基于散列索引的
+
+散列索引会将浮点数截断为整数,所以要尽量避免给浮点字段加散列索引。
+
+*** TTL 索引
+
+Time to Live 用于过期自动删除文档。
+
+~db.books.createIndex( { "created_at_date": 1 }, { expireAfterSeconds: 86400 } )~
+
+根据 =create_at_date= 字段的值后的 86400 秒后删除文档。
+
+字段可以是 date 类型或者 date 数组(最早时间值元素被使用)
+
+如果某个文档不包含该字段或者这个字段值不是 date 类型,那么永不过期。
+
+MongoDB 内部后台任务会每个 60 秒清理过期文档,因此文档过期后具体存活多久是没有严格保证的。
+
+注意:
+- TTL 索引不能用在联合索引中,不能再优先大小的集合中使用,不能使用 =_id= 字段。
+- 如果希望给每一个文档不同的过期时间,那么可以设置 =expireAfterSeconds:0= 然后设置字段的设置为想要的过期时间。
+
+*** 部分索引(Partial Indexex)
+
+只对满足 =partialFilterExpression= 查询条件的文档加索引。
+
+#+begin_src mongo
+db.books.createIndex(
+  { price: 1, name: 1 },
+  { partialFilterExpression: { price: { $gt: 30 } } }
+)
+#+end_src
+
+他的主要的特点是:使用更少的存储,并且容易管理
+
+=partialFilterExpression= 支持一下操作符:
+- 等值比较符 $eq 或者 field:value
+- $exist: true
+- $gt、$gte、$lt、$lte
+- $type
+- $and 并且只能在最外一层
+
+只有在通过部分索引可以查询到所有需要的数据的情况下采用部分索引。或者理解为我们的查询条件比 partialFilterExpression 更加严格,否则这个索引会被忽略
+
+partialFilterExpression 不需要是稀疏索引的一部分,例如 : ~db.books.createIndex({ name: 1 },{ partialFilterExpression: { price: { $gt: 30 } } })~
+
+只有当查询中同时包含 name 并且 price 等于或者大于 30 才会用的上这个部分索引。
+
+注意点:
+- 和稀疏索引比起来,更加推荐用部分索引。稀疏索引是部分索引的功能子集。
+- =_id= 不能用于部分索引。
+- 分片键索引也不能是部分索引。
+- partialFilterExpression 不能与 sparse 选项结合使用。
+
+*** 稀疏索引(Spare indexes)
+
+稀疏索引只会对包含索引字段的文档加索引
+
+~db.books.createIndex( { "price": 1 }, { sparse: true } )~ 包含 price 的文档会被索引
+
+有几个索引本身就是稀疏的:
+- 2d, 2dsphere
+- geoHaystack
+- text
+
+稀疏索引和唯一索引多个文档缺失索引建。但是不允许多个文档的索引字段值一样。
+
+不推荐在 MongoDB 新版本中使用稀疏索引,推荐使用部分索引。
+
+*** 唯一索引
+
+~db.books.createIndex( { "name": 1 }, { unique: true } )~
+
+唯一索引可以包含在联合索引中,或者嵌套文档索引中。
+
+如果联合索引设置了唯一索引, ~db.books.createIndex( { "name": 1, "isbn": 1 }, { unique: true } )~ 那么会按照两个字段进行唯一性比对。
+
+唯一索引不能和 hash 索引一起用。
+
+如果集合中索引字段已经有重复的数据,那么无法创建该字段的唯一索引。
+
+如果一个文档缺少索引字段,那么是可以被插入的,但是不能存在第二个文档也没有该字段。因为 mongodb 会把缺失字段值存储为 null,所以只能有一个文档缺失该字段。
+
+唯一索引和部分索引组合的情况下,只有在部分索引有效后才能应用唯一索引。这意味着可能有多个文档有重复值,但是他们不是同时属于部分索引。
+
+*** 忽略大小写
+
+ collation 参数允许用户定义特定语言的规则,一般用于忽略大小写(但是还有其他用途)
+
+#+begin_src mongo
+db.books.createIndex( { "name" : 1 },
+                          { collation: {
+                              locale : 'en',
+                              strength : 1
+                            }
+                          } )
+#+end_src
+
+strenth 参数用于区分大小写的定义。他遵循 International Components for Unicode (ICU) 比较级别。可以接受以下值:
+- 1a : 原始的级别,按照字符串值比较,忽略其他的不同,例如大小写和变音符
+- 2 : 基于第一种, 如果是相等,接着比较变音符(口音)
+- 3(默认值) : 基于 2 ,adding case and variants.
+- 4 : Limited for specific use cases to consider the punctuation when levels 1-3 ignore punctuation, or for processing Japanese text.
+- 5 : Limited for specific use cases: a tie breaker.
+
+*** 地理空间索引
+
+*** 2dsphree 地理空间索引
+
+*** geoHaystack 索引
+
+* 索引的构建和管理
+
+默认情况下,索引会阻塞集合上的所以其他操作,因此生成环境中要谨慎使用。如果是使用后台创建,那么只会阻塞当前的连接。其他链接操作集合不会被阻塞。
+
+后台创建会比前台创建耗费更多实际爱你,尤其是索引数据无法全部放入内存时。
+
+应当尽早的创建索引, 索引构建过程中,查询时用不了索引的,只有当索引构建完成才可以用。
+
+不应当在应用程序的代码中取创建索引,但是可以在应用程序中获取索引列表,然后在维护期间创建他们。
+
+* 强制使用索引
+
+可以使用 hint() 强制查询使用某个索引。
+
+#+begin_src mongo
+db.books.createIndex( { isbn: 1 }, { background: true } )
+{
+"createdCollectionAutomatically" : false,
+"numIndexesBefore" : 8,
+"numIndexesAfter" : 9,
+"ok" : 1
+}
+#+end_src
+
+通过 explain() 可以查看执行计划, 其中 winningPlan 是查询计划
+
+#+begin_src mongo
+db.books.find({isbn: "1001"}).explain()
+…
+"winningPlan" : {
+"stage" : "FETCH",
+"inputStage" : {
+"stage" : "IXSCAN",
+"keyPattern" : {
+"isbn" : 1,
+"name" : 1
+},
+"indexName" : "isbn_1_name_1",
+...
+#+end_src
+
+这里可以看到查询使用了索引是 isbn 和 name 而不是 刚刚新建的 isbn 索引, 也可以通过 rejectedPlans 查看
+#+begin_src mongo
+rejectedPlans" : [
+{
+"stage" : "FETCH",
+"inputStage" : {
+"stage" : "IXSCAN",
+"keyPattern" : {
+"isbn" : 1
+},
+"indexName" : "isbn_1",
+...
+#+end_src
+从这里可以看出,mongo 会重用比通用索引更具体的索引
+
+但在我们的 isbn_1 索引比 isbn_1_name_1 索引表现更好的情况下，我们可能不确定。
+
+我们可以强制 mongodb 使用某个索引,通过 hint
+#+begin_src mongo
+db.books.find({isbn: "1001"}).hint("international_standard_book_number_index")
+.explain()
+{
+...
+                "winningPlan" : {
+                        "stage" : "FETCH",
+                        "inputStage" : {
+                                "stage" : "IXSCAN",
+                                "keyPattern" : {
+                                        "isbn" : 1
+                                },
+...
+#+end_src
+
+*  hint 和稀疏索引
+
+hint 指定稀疏索引,可能导致结果中缺失一些数据
+
+* 在副本集上构建索引
